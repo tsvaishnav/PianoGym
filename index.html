@@ -1,0 +1,310 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Piano Note MVP</title>
+
+  <!-- VexFlow via CDN (won't break MIDI if it fails to load) -->
+ <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.5/releases/vexflow-min.js"></script>
+
+  <style>
+    body { font-family: system-ui, Arial; padding: 16px; max-width: 760px; margin: 0 auto; }
+    button, select { font-size: 16px; padding: 10px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+    .big { font-size: 28px; margin: 10px 0; }
+    .ok { color: #1b7f2a; font-weight: 700; }
+    .bad { color: #b00020; font-weight: 700; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
+    #staff { border: 1px solid #eee; border-radius: 12px; padding: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Piano Note MVP</h1>
+
+  <div class="row">
+    <button id="btnEnable">Enable MIDI</button>
+    <select id="midiInputs" disabled>
+      <option value="">(no inputs yet)</option>
+    </select>
+    <button id="btnNew">New Note</button>
+  </div>
+
+  <!-- Staff will render here -->
+  <div id="staff"></div>
+
+  <div class="row" style="margin-top:12px;">
+  <button id="btnShowAnswer">Show target answer</button>
+  <button id="btnHideAnswer">Hide</button>
+</div>
+
+  <div class="card" id="answerCard" style="display:none;">
+  <div>Target answer:</div>
+  <div class="big" id="targetAnswer">—</div>
+</div>
+
+<div class="card">
+  <div>You played:</div>
+  <div class="big" id="played">—</div>
+
+  <div class="big" id="result"></div>
+  <div id="debug" style="opacity:0.75;"></div>
+</div>
+
+  <script>
+    const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    function midiToNoteName(n) {
+      const name = NOTE_NAMES[n % 12];
+      const octave = Math.floor(n / 12) - 1; // 60 = C4
+      return `${name}${octave}`;
+    }
+
+    const NATURALS = ["C","D","E","F","G","A","B"];
+    function randomTarget() {
+      const name = NATURALS[Math.floor(Math.random() * NATURALS.length)];
+      const octave = 4; // C4..B4 (keep same as your working version)
+      return `${name}${octave}`;
+    }
+
+    // -------- VexFlow rendering (SAFE / GUARDED) ----------
+    function getVF() {
+      // Different builds expose different globals.
+      // Older: window.Vex.Flow
+      // Newer: window.VexFlow
+      if (window.Vex && window.Vex.Flow) return window.Vex.Flow;
+      if (window.VexFlow) return window.VexFlow;
+      return null;
+    }
+
+    function noteToVexKey(note) {
+      // "C4" -> "c/4"
+      const letter = note[0].toLowerCase();
+      const octave = note.slice(-1);
+      return `${letter}/${octave}`;
+    }
+
+    function drawGrandStaff(noteStr) {
+      const VF = getVF();
+      const staffDiv = document.getElementById("staff");
+      staffDiv.innerHTML = ""; // clear previous
+
+      // If VexFlow didn't load, DO NOT crash the app.
+      if (!VF) {
+        staffDiv.textContent = "Staff renderer not loaded (VexFlow). MIDI still works.";
+        return;
+      }
+
+      try {
+        const renderer = new VF.Renderer(staffDiv, VF.Renderer.Backends.SVG);
+        renderer.resize(700, 220);
+        const ctx = renderer.getContext();
+
+        const treble = new VF.Stave(10, 20, 650).addClef("treble");
+        const bass   = new VF.Stave(10, 120, 650).addClef("bass");
+
+        treble.setContext(ctx).draw();
+        bass.setContext(ctx).draw();
+
+        // connectors (brace + lines)
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw();
+
+        // For now, since your range is C4..B4, always treble is fine.
+        // We'll expand to true grand-staff logic later.
+        const vexKey = noteToVexKey(noteStr);
+
+        const n = new VF.StaveNote({
+          clef: "treble",
+          keys: [vexKey],
+          duration: "q"
+        });
+
+        const voice = new VF.Voice({ num_beats: 1, beat_value: 4 });
+        voice.addTickables([n]);
+
+        new VF.Formatter().joinVoices([voice]).format([voice], 400);
+        voice.draw(ctx, treble);
+
+      } catch (err) {
+        // Never allow rendering errors to kill MIDI
+        console.error("VexFlow render error:", err);
+        staffDiv.textContent = "VexFlow render error (check console). MIDI still works.";
+      }
+    }
+
+    // -------- your original MIDI UI ----------
+    const btnEnable = document.getElementById("btnEnable");
+    const btnNew = document.getElementById("btnNew");
+    const selInputs = document.getElementById("midiInputs");
+    const elPlayed = document.getElementById("played");
+    const elResult = document.getElementById("result");
+    const elDebug  = document.getElementById("debug");
+    const btnShowAnswer = document.getElementById("btnShowAnswer");
+    const btnHideAnswer = document.getElementById("btnHideAnswer");
+    const answerCard = document.getElementById("answerCard");
+    const elTargetAnswer = document.getElementById("targetAnswer");
+
+    let midiAccess = null;
+    let activeInput = null;
+    let target = null;
+
+    function setResult(text, cls) {
+      elResult.textContent = text;
+      elResult.className = cls ? `big ${cls}` : "big";
+    }
+
+    function populateInputs() {
+      const inputs = Array.from(midiAccess.inputs.values());
+      selInputs.innerHTML = "";
+      if (inputs.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no MIDI inputs found)";
+        selInputs.appendChild(opt);
+        selInputs.disabled = true;
+        return;
+      }
+      for (const input of inputs) {
+        const opt = document.createElement("option");
+        opt.value = input.id;
+        opt.textContent = input.name || `Input ${input.id}`;
+        selInputs.appendChild(opt);
+      }
+      selInputs.disabled = false;
+    }
+
+    function detachActive() {
+      if (activeInput) activeInput.onmidimessage = null;
+      activeInput = null;
+    }
+
+    function attachToInput(inputId) {
+      detachActive();
+      const input = midiAccess.inputs.get(inputId);
+      if (!input) return;
+      activeInput = input;
+      activeInput.onmidimessage = onMidiMessage;
+      elDebug.textContent = `Listening to: ${activeInput.name || activeInput.id}`;
+    }
+
+    function pickDefaultInput() {
+      const inputs = Array.from(midiAccess.inputs.values());
+      if (inputs.length === 0) return;
+      const preferred = inputs.find(i => /fp|roland/i.test(i.name || ""));
+      const chosen = preferred || inputs[0];
+      selInputs.value = chosen.id;
+      attachToInput(chosen.id);
+    }
+
+function newNote() {
+  target = randomTarget();
+
+  answerCard.style.display = "none";
+  elTargetAnswer.textContent = "—";
+
+  elPlayed.textContent = "—";
+  setResult("", "");
+
+  drawGrandStaff(target);
+}
+
+
+
+    // HELPER FUNCTION STARTS : This is a helper function to use laptop keyboard as pc
+
+    function grade(played) {
+  elPlayed.textContent = played;
+  if (!target) return;
+
+  if (played === target) {
+    setResult("✅ Correct", "ok");
+    setTimeout(newNote, 450);   // advance
+  } else {
+    setResult("❌ Wrong", "bad"); // stay (do nothing else)
+  }
+}
+
+    // HELPER FUNCTION ENDS
+
+function onMidiMessage(msg) {
+  const [status, noteNumber, velocity] = msg.data;
+  const cmd = status & 0xF0;
+  if (!(cmd === 0x90 && velocity > 0)) return;
+
+  grade(midiToNoteName(noteNumber));
+}
+
+    btnEnable.addEventListener("click", async () => {
+      if (!navigator.requestMIDIAccess) {
+        alert("WebMIDI not supported. Use Chrome.");
+        return;
+      }
+      try {
+        midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+
+        populateInputs();
+        pickDefaultInput();
+
+        midiAccess.onstatechange = () => {
+          populateInputs();
+          if (activeInput && !midiAccess.inputs.get(activeInput.id)) {
+            detachActive();
+            pickDefaultInput();
+          }
+        };
+
+        btnNew.disabled = false;
+        btnEnable.disabled = true;
+        btnEnable.textContent = "MIDI Enabled";
+        newNote();
+      } catch (e) {
+        console.error(e);
+        alert("Could not enable MIDI. Check permissions and USB connection.");
+      }
+    });
+
+    selInputs.addEventListener("change", () => {
+      if (!midiAccess) return;
+      const id = selInputs.value;
+      if (id) attachToInput(id);
+    });
+
+    btnNew.addEventListener("click", newNote);
+
+    // --- DEV: laptop keyboard input (works without piano) ---
+// A S D F G H J K -> C4 D4 E4 F4 G4 A4 B4 C5
+const KEYMAP = {
+  "a": "C4",
+  "s": "D4",
+  "d": "E4",
+  "f": "F4",
+  "g": "G4",
+  "h": "A4",
+  "j": "B4",
+  "k": "C5",
+};
+
+window.addEventListener("keydown", (e) => {
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+
+  const key = e.key.toLowerCase();
+  const mapped = KEYMAP[key];
+  if (mapped) grade(mapped);
+});
+
+btnShowAnswer.addEventListener("click", () => {
+  if (!target) return;
+  elTargetAnswer.textContent = target;
+  answerCard.style.display = "block";
+});
+
+btnHideAnswer.addEventListener("click", () => {
+  answerCard.style.display = "none";
+});
+
+newNote();
+  </script>
+</body>
+</html>
