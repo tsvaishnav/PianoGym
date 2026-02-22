@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Piano Note MVP</title>
 
-  <!-- VexFlow via CDN (won't break MIDI if it fails to load) -->
- <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.5/releases/vexflow-min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.5/releases/vexflow-min.js"></script>
 
   <style>
-    body { font-family: system-ui, Arial; padding: 16px; max-width: 760px; margin: 0 auto; }
+    body { font-family: system-ui, Arial; padding: 16px; max-width: 900px; margin: 0 auto; }
     button, select { font-size: 16px; padding: 10px; }
     .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
     .big { font-size: 28px; margin: 10px 0; }
@@ -17,341 +16,623 @@
     .bad { color: #b00020; font-weight: 700; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 12px; }
     #staff { border: 1px solid #eee; border-radius: 12px; padding: 8px; margin-top: 12px; }
+    .muted { opacity: 0.75; }
   </style>
 </head>
+
 <body>
   <h1>Piano Note MVP</h1>
 
   <div class="row">
     <button id="btnEnable">Enable MIDI</button>
+
     <select id="midiInputs" disabled>
       <option value="">(no inputs yet)</option>
     </select>
+
+    <!-- ONE dropdown with ALL options -->
+    <select id="challenge">
+      <option value="single">Single note (grand staff)</option>
+
+      <option value="two_split_either" selected>Two notes — split staff — either</option>
+      <option value="two_split_harmonic">Two notes — split staff — harmonic</option>
+      <option value="two_split_melodic">Two notes — split staff — melodic</option>
+
+      <option value="two_treble_either">Two notes — treble only — either</option>
+      <option value="two_treble_harmonic">Two notes — treble only — harmonic</option>
+      <option value="two_treble_melodic">Two notes — treble only — melodic</option>
+
+      <option value="two_bass_either">Two notes — bass only — either</option>
+      <option value="two_bass_harmonic">Two notes — bass only — harmonic</option>
+      <option value="two_bass_melodic">Two notes — bass only — melodic</option>
+    </select>
+
     <button id="btnNew">New Note</button>
   </div>
 
-  <!-- Staff will render here -->
   <div id="staff"></div>
 
   <div class="row" style="margin-top:12px;">
-  <button id="btnShowAnswer">Show target answer</button>
-  <button id="btnHideAnswer">Hide</button>
-</div>
+    <button id="btnShowAnswer">Show target answer</button>
+    <button id="btnHideAnswer">Hide</button>
+  </div>
 
   <div class="card" id="answerCard" style="display:none;">
-  <div>Target answer:</div>
-  <div class="big" id="targetAnswer">—</div>
-</div>
+    <div>Target answer:</div>
+    <div class="big" id="targetAnswer">—</div>
+  </div>
 
-<div class="card">
-  <div>You played:</div>
-  <div class="big" id="played">—</div>
+  <div class="card">
+    <div>You played:</div>
+    <div class="big" id="played">—</div>
 
-  <div class="big" id="result"></div>
-  <div id="debug" style="opacity:0.75;"></div>
-</div>
+    <div class="big" id="result"></div>
+    <div id="debug" class="muted"></div>
+  </div>
 
- <script>
-  // ----------------------------
-  // Utils
-  // ----------------------------
-  const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  <script>
+    // ----------------------------
+    // Utils
+    // ----------------------------
+    const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
-  function midiToNoteName(n) {
-    const name = NOTE_NAMES[n % 12];
-    const octave = Math.floor(n / 12) - 1; // 60 = C4
-    return `${name}${octave}`;
-  }
-
-  // MVP: naturals only
-  const NATURALS = ["C","D","E","F","G","A","B"];
-  function randomSingleTarget() {
-    const name = NATURALS[Math.floor(Math.random() * NATURALS.length)];
-    const octave = 4; // keep as your current safe range
-    return `${name}${octave}`;
-  }
-
-  // ----------------------------
-  // VexFlow rendering
-  // ----------------------------
-  function getVF() {
-    if (window.Vex && window.Vex.Flow) return window.Vex.Flow;
-    if (window.VexFlow) return window.VexFlow;
-    return null;
-  }
-
-  function noteToVexKey(note) {
-    // "C4" -> "c/4"
-    const letter = note[0].toLowerCase();
-    const octave = note.slice(-1);
-    return `${letter}/${octave}`;
-  }
-
-  function drawGrandStaff(notes) {
-    // notes: array of note strings, e.g., ["C4"] or later ["C4","E4"]
-    const VF = getVF();
-    const staffDiv = document.getElementById("staff");
-    staffDiv.innerHTML = "";
-
-    if (!VF) {
-      staffDiv.textContent = "Staff renderer not loaded (VexFlow). MIDI still works.";
-      return;
+    function midiToNoteName(n) {
+      const name = NOTE_NAMES[n % 12];
+      const octave = Math.floor(n / 12) - 1; // 60 = C4
+      return `${name}${octave}`;
     }
 
-    try {
-      const renderer = new VF.Renderer(staffDiv, VF.Renderer.Backends.SVG);
-      renderer.resize(700, 220);
-      const ctx = renderer.getContext();
-
-      const treble = new VF.Stave(10, 20, 650).addClef("treble");
-      const bass   = new VF.Stave(10, 120, 650).addClef("bass");
-
-      treble.setContext(ctx).draw();
-      bass.setContext(ctx).draw();
-
-      new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
-      new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
-      new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw();
-
-      // For now: your note range is C4..B4, so treble is fine.
-      // Later: we'll split notes across clefs.
-      const keys = notes.map(noteToVexKey);
-
-      const staveNote = new VF.StaveNote({
-        clef: "treble",
-        keys,
-        duration: "q"
-      });
-
-      const voice = new VF.Voice({ num_beats: 1, beat_value: 4 });
-      voice.addTickables([staveNote]);
-
-      new VF.Formatter().joinVoices([voice]).format([voice], 400);
-      voice.draw(ctx, treble);
-
-    } catch (err) {
-      console.error("VexFlow render error:", err);
-      staffDiv.textContent = "VexFlow render error (check console). MIDI still works.";
+    function noteNameToMidi(note) {
+      // naturals only: "C4"
+      const letter = note[0].toUpperCase();
+      const octave = parseInt(note.slice(-1), 10);
+      const base = {C:0,D:2,E:4,F:5,G:7,A:9,B:11}[letter];
+      return (octave + 1) * 12 + base;
     }
-  }
 
-  // ----------------------------
-  // UI elements
-  // ----------------------------
-  const btnEnable = document.getElementById("btnEnable");
-  const btnNew = document.getElementById("btnNew");
-  const selInputs = document.getElementById("midiInputs");
-  const elPlayed = document.getElementById("played");
-  const elResult = document.getElementById("result");
-  const elDebug  = document.getElementById("debug");
+    function isNaturalMidi(midi) {
+      return !NOTE_NAMES[midi % 12].includes("#");
+    }
 
-  const btnShowAnswer = document.getElementById("btnShowAnswer");
-  const btnHideAnswer = document.getElementById("btnHideAnswer");
-  const answerCard = document.getElementById("answerCard");
-  const elTargetAnswer = document.getElementById("targetAnswer");
-
-  function setResult(text, cls) {
-    elResult.textContent = text;
-    elResult.className = cls ? `big ${cls}` : "big";
-  }
-
-  // ----------------------------
-  // Tiny Engine
-  // ----------------------------
-  const Engine = {
-    // Future-ready: mode can be "single" or "two"
-    mode: "single",
-
-    targetNotes: [],   // e.g., ["C4"] or later ["C4","E4"]
-    isLocked: false,   // prevent double-advancing on repeated hits
-
-    newChallenge() {
-      // Generate target(s) depending on mode
-      if (this.mode === "single") {
-        this.targetNotes = [randomSingleTarget()];
-      } else {
-        // placeholder for later
-        this.targetNotes = [randomSingleTarget(), randomSingleTarget()];
-      }
-
-      this.isLocked = false;
-
-      // Reset UI
-      answerCard.style.display = "none";
-      elTargetAnswer.textContent = "—";
-      elPlayed.textContent = "—";
-      setResult("", "");
-
-      // Render staff
-      drawGrandStaff(this.targetNotes);
-    },
-
-    revealAnswer() {
-      if (!this.targetNotes.length) return;
-      elTargetAnswer.textContent = this.targetNotes.join(", ");
-      answerCard.style.display = "block";
-    },
-
-    hideAnswer() {
-      answerCard.style.display = "none";
-    },
-
-    handlePlayedNote(noteName) {
-      // For now, single-note correctness: exact match to first target note.
-      // (Two-note logic will come next.)
-      if (!this.targetNotes.length) return;
-
-      elPlayed.textContent = noteName;
-
-      const correct = (noteName === this.targetNotes[0]);
-
-      if (correct) {
-        if (this.isLocked) return; // avoid multiple advances
-        this.isLocked = true;
-        setResult("✅ Correct", "ok");
-        setTimeout(() => this.newChallenge(), 450);
-      } else {
-        setResult("❌ Wrong", "bad");
+    function randomNaturalMidiInRange(minMidi, maxMidi) {
+      while (true) {
+        const midi = minMidi + Math.floor(Math.random() * (maxMidi - minMidi + 1));
+        if (isNaturalMidi(midi)) return midi;
       }
     }
-  };
 
-  // ----------------------------
-  // MIDI wiring (unchanged behavior)
-  // ----------------------------
-  let midiAccess = null;
-  let activeInput = null;
-
-  function populateInputs() {
-    const inputs = Array.from(midiAccess.inputs.values());
-    selInputs.innerHTML = "";
-
-    if (inputs.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "(no MIDI inputs found)";
-      selInputs.appendChild(opt);
-      selInputs.disabled = true;
-      return;
+    // Visual duration (single + harmonic): q/h/w
+    const DURATIONS = ["q", "h", "w"];
+    function randomDuration() {
+      return DURATIONS[Math.floor(Math.random() * DURATIONS.length)];
     }
 
-    for (const input of inputs) {
-      const opt = document.createElement("option");
-      opt.value = input.id;
-      opt.textContent = input.name || `Input ${input.id}`;
-      selInputs.appendChild(opt);
+    // Style threshold
+    const HARMONIC_GAP_MS = 150;
+
+    // Interval restriction: within a 5th (<= 7 semitones)
+    const MAX_INTERVAL_SEMITONES = 7;
+
+    function pickSecondWithinFifth(rootMidi, minMidi, maxMidi) {
+      // Try random offsets in [-7..-1, 1..7] until we find a valid natural in-range
+      for (let tries = 0; tries < 200; tries++) {
+        let offset = (Math.floor(Math.random() * MAX_INTERVAL_SEMITONES) + 1); // 1..7
+        if (Math.random() < 0.5) offset *= -1;
+
+        const m = rootMidi + offset;
+        if (m < minMidi || m > maxMidi) continue;
+        if (!isNaturalMidi(m)) continue;
+        if (m === rootMidi) continue;
+        return m;
+      }
+      // Fallback: just find *any* other natural in range (should be rare)
+      let m2 = randomNaturalMidiInRange(minMidi, maxMidi);
+      while (m2 === rootMidi) m2 = randomNaturalMidiInRange(minMidi, maxMidi);
+      return m2;
     }
-    selInputs.disabled = false;
-  }
 
-  function detachActive() {
-    if (activeInput) activeInput.onmidimessage = null;
-    activeInput = null;
-  }
-
-  function attachToInput(inputId) {
-    detachActive();
-    const input = midiAccess.inputs.get(inputId);
-    if (!input) return;
-
-    activeInput = input;
-    activeInput.onmidimessage = onMidiMessage;
-    elDebug.textContent = `Listening to: ${activeInput.name || activeInput.id}`;
-  }
-
-  function pickDefaultInput() {
-    const inputs = Array.from(midiAccess.inputs.values());
-    if (inputs.length === 0) return;
-
-    const preferred = inputs.find(i => /fp|roland/i.test(i.name || ""));
-    const chosen = preferred || inputs[0];
-    selInputs.value = chosen.id;
-    attachToInput(chosen.id);
-  }
-
-  function onMidiMessage(msg) {
-    const [status, data1, data2] = msg.data;
-    const cmd = status & 0xF0;
-
-    // NoteOn with velocity > 0
-    if (!(cmd === 0x90 && data2 > 0)) return;
-
-    const played = midiToNoteName(data1);
-    Engine.handlePlayedNote(played);
-  }
-
-  btnEnable.addEventListener("click", async () => {
-    if (!navigator.requestMIDIAccess) {
-      alert("WebMIDI not supported. Use Chrome.");
-      return;
+    // ----------------------------
+    // VexFlow rendering
+    // ----------------------------
+    function getVF() {
+      if (window.Vex && window.Vex.Flow) return window.Vex.Flow;
+      if (window.VexFlow) return window.VexFlow;
+      return null;
     }
-    try {
-      midiAccess = await navigator.requestMIDIAccess({ sysex: false });
 
-      populateInputs();
-      pickDefaultInput();
+    function noteToVexKey(note) {
+      // "C4" -> "c/4"
+      const letter = note[0].toLowerCase();
+      const octave = note.slice(-1);
+      return `${letter}/${octave}`;
+    }
 
-      midiAccess.onstatechange = () => {
-        populateInputs();
-        if (activeInput && !midiAccess.inputs.get(activeInput.id)) {
-          detachActive();
-          pickDefaultInput();
+    function clefForNote(note) {
+      return noteNameToMidi(note) >= 60 ? "treble" : "bass"; // C4 and above treble
+    }
+
+    function drawGrandStaffHarmonic(notes, duration, forceClef /* null|"treble"|"bass" */) {
+      const VF = getVF();
+      const staffDiv = document.getElementById("staff");
+      staffDiv.innerHTML = "";
+
+      if (!VF) {
+        staffDiv.textContent = "Staff renderer not loaded (VexFlow). MIDI still works.";
+        return;
+      }
+
+      try {
+        const renderer = new VF.Renderer(staffDiv, VF.Renderer.Backends.SVG);
+        renderer.resize(820, 240);
+        const ctx = renderer.getContext();
+
+        const treble = new VF.Stave(10, 20, 780).addClef("treble");
+        const bass   = new VF.Stave(10, 140, 780).addClef("bass");
+        treble.setContext(ctx).draw();
+        bass.setContext(ctx).draw();
+
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
+        new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw();
+
+        const beats = (duration === "w") ? 4 : (duration === "h") ? 2 : 1;
+
+        function drawChord(stave, clef, chordNotes) {
+          if (!chordNotes.length) return;
+          const keys = chordNotes.map(noteToVexKey);
+          const staveNote = new VF.StaveNote({ clef, keys, duration });
+
+          const voice = new VF.Voice({ num_beats: beats, beat_value: 4 });
+          voice.setStrict(false);
+          voice.addTickables([staveNote]);
+          new VF.Formatter().joinVoices([voice]).format([voice], 500);
+          voice.draw(ctx, stave);
         }
-      };
 
-      btnEnable.disabled = true;
-      btnEnable.textContent = "MIDI Enabled";
-      btnNew.disabled = false;
+        if (forceClef === "treble") return drawChord(treble, "treble", notes);
+        if (forceClef === "bass") return drawChord(bass, "bass", notes);
 
-      // enable answer buttons when MIDI is enabled (optional)
-      btnShowAnswer.disabled = false;
-      btnHideAnswer.disabled = false;
+        const trebleNotes = notes.filter(n => clefForNote(n) === "treble");
+        const bassNotes   = notes.filter(n => clefForNote(n) === "bass");
 
-    } catch (e) {
-      console.error(e);
-      alert("Could not enable MIDI. Check permissions and USB connection.");
+        drawChord(treble, "treble", trebleNotes);
+        drawChord(bass, "bass", bassNotes);
+
+      } catch (err) {
+        console.error("VexFlow render error:", err);
+        staffDiv.textContent = "VexFlow render error (check console). MIDI still works.";
+      }
     }
-  });
 
-  selInputs.addEventListener("change", () => {
-    if (!midiAccess) return;
-    const id = selInputs.value;
-    if (id) attachToInput(id);
-  });
+function drawGrandStaffMelodic(notes, forceClef /* null|"treble"|"bass" */) {
+  // Render two notes sequentially: note, note (quarter notes), with invisible filler to complete 4/4
+  const VF = getVF();
+  const staffDiv = document.getElementById("staff");
+  staffDiv.innerHTML = "";
 
-  btnNew.addEventListener("click", () => Engine.newChallenge());
+  if (!VF) {
+    staffDiv.textContent = "Staff renderer not loaded (VexFlow). MIDI still works.";
+    return;
+  }
 
-  // Answer buttons
-  btnShowAnswer.addEventListener("click", () => Engine.revealAnswer());
-  btnHideAnswer.addEventListener("click", () => Engine.hideAnswer());
+  try {
+    const renderer = new VF.Renderer(staffDiv, VF.Renderer.Backends.SVG);
+    renderer.resize(820, 240);
+    const ctx = renderer.getContext();
 
-  // ----------------------------
-  // Dev keyboard input (coffee shop)
-  // ----------------------------
-  const KEYMAP = {
-    "a": "C4",
-    "s": "D4",
-    "d": "E4",
-    "f": "F4",
-    "g": "G4",
-    "h": "A4",
-    "j": "B4",
-    "k": "C5",
-  };
+    const treble = new VF.Stave(10, 20, 780).addClef("treble");
+    const bass   = new VF.Stave(10, 140, 780).addClef("bass");
+    treble.setContext(ctx).draw();
+    bass.setContext(ctx).draw();
 
-  window.addEventListener("keydown", (e) => {
-    const tag = (document.activeElement && document.activeElement.tagName) || "";
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
+    new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
+    new VF.StaveConnector(treble, bass).setType(VF.StaveConnector.type.SINGLE_RIGHT).setContext(ctx).draw();
 
-    const key = e.key.toLowerCase();
-    const mapped = KEYMAP[key];
-    if (mapped) Engine.handlePlayedNote(mapped);
-  });
+    // Melodic: force quarter notes so it visually reads as "two notes in a measure"
+    const duration = "q";
 
-  // ----------------------------
-  // Start immediately (no click needed)
-  // ----------------------------
-  Engine.newChallenge();
-</script>
+    function makeInvisibleRest(clef) {
+      const r = new VF.StaveNote({ clef, keys: ["b/4"], duration: "qr" });
+      r.setStyle({ fillStyle: "transparent", strokeStyle: "transparent" });
+      return r;
+    }
+
+    function drawSequence(stave, clef, seqNotes) {
+      if (!seqNotes.length) return;
+
+      const tickables = [];
+
+      // 1st note
+      tickables.push(new VF.StaveNote({
+        clef,
+        keys: [noteToVexKey(seqNotes[0])],
+        duration
+      }));
+
+      // 2nd note (if present)
+      if (seqNotes.length >= 2) {
+        tickables.push(new VF.StaveNote({
+          clef,
+          keys: [noteToVexKey(seqNotes[1])],
+          duration
+        }));
+      }
+
+      // Fill remaining beats to make a 4/4 measure, but make rests invisible
+      // If we had 1 note: add 3 invisible rests
+      // If we had 2 notes: add 2 invisible rests
+      const need = (seqNotes.length >= 2) ? 2 : 3;
+      for (let i = 0; i < need; i++) tickables.push(makeInvisibleRest(clef));
+
+      const v = new VF.Voice({ num_beats: 4, beat_value: 4 });
+      v.setStrict(false);
+      v.addTickables(tickables);
+
+      new VF.Formatter().joinVoices([v]).format([v], 650);
+      v.draw(ctx, stave);
+    }
+
+    if (forceClef === "treble") return drawSequence(treble, "treble", notes);
+    if (forceClef === "bass") return drawSequence(bass, "bass", notes);
+
+    const trebleNotes = notes.filter(n => clefForNote(n) === "treble");
+    const bassNotes   = notes.filter(n => clefForNote(n) === "bass");
+
+    drawSequence(treble, "treble", trebleNotes);
+    drawSequence(bass, "bass", bassNotes);
+
+  } catch (err) {
+    console.error("VexFlow render error:", err);
+    staffDiv.textContent = "VexFlow render error (check console). MIDI still works.";
+  }
+}
+
+    // ----------------------------
+    // UI elements
+    // ----------------------------
+    const btnEnable = document.getElementById("btnEnable");
+    const btnNew = document.getElementById("btnNew");
+    const selInputs = document.getElementById("midiInputs");
+    const selChallenge = document.getElementById("challenge");
+
+    const elPlayed = document.getElementById("played");
+    const elResult = document.getElementById("result");
+    const elDebug  = document.getElementById("debug");
+
+    const btnShowAnswer = document.getElementById("btnShowAnswer");
+    const btnHideAnswer = document.getElementById("btnHideAnswer");
+    const answerCard = document.getElementById("answerCard");
+    const elTargetAnswer = document.getElementById("targetAnswer");
+
+    function setResult(text, cls) {
+      elResult.textContent = text;
+      elResult.className = cls ? `big ${cls}` : "big";
+    }
+
+    function blurSelect(el) { try { el.blur(); } catch {} }
+
+    // ----------------------------
+    // Engine
+    // ----------------------------
+    const Engine = {
+      isTwo: false,
+      placement: "split", // split|treble|bass
+      style: "either",    // either|harmonic|melodic
+
+      // display style for "either" (we randomly choose per challenge)
+      displayStyle: "harmonic",
+
+      targetNotes: [],
+      targetDuration: "q",
+      renderForceClef: null,
+
+      // attempt tracking
+      attemptNotes: [],
+      attemptTimes: [],
+      attemptTimer: null,
+      attemptWindowMs: 2000,
+      isLocked: false,
+
+      parseChallengeValue(v) {
+        if (v === "single") {
+          this.isTwo = false;
+          this.placement = "split";
+          this.style = "either";
+          return;
+        }
+        this.isTwo = true;
+        const parts = v.split("_"); // ["two","split","either"]
+        this.placement = parts[1] || "split";
+        this.style = parts[2] || "either";
+      },
+
+      _resetAttempt() {
+        this.attemptNotes = [];
+        this.attemptTimes = [];
+        if (this.attemptTimer) clearTimeout(this.attemptTimer);
+        this.attemptTimer = null;
+      },
+
+      _setAttemptTimeout() {
+        if (this.attemptTimer) return;
+        this.attemptTimer = setTimeout(() => {
+          this._resetAttempt();
+          setResult("⏱️ Try again (too slow)", "bad");
+          elPlayed.textContent = "—";
+        }, this.attemptWindowMs);
+      },
+
+      _notesMatchTargetSet() {
+        const expected = [...this.targetNotes].sort().join("|");
+        const got = [...this.attemptNotes.slice(0, 2)].sort().join("|");
+        return expected === got;
+      },
+
+      _attemptStyleByTimeGap() {
+        if (this.attemptTimes.length < 2) return null;
+        const gap = Math.abs(this.attemptTimes[1] - this.attemptTimes[0]);
+        return (gap <= HARMONIC_GAP_MS) ? "harmonic" : "melodic";
+      },
+
+      newChallenge() {
+        this.parseChallengeValue(selChallenge.value);
+
+        this.isLocked = false;
+        this._resetAttempt();
+
+        // Determine ranges + forced clef
+        let min = 45, max = 84; // split default: A2..C6
+        this.renderForceClef = null;
+
+        if (this.placement === "treble") {
+          min = 60; max = 84; // C4..C6
+          this.renderForceClef = "treble";
+        } else if (this.placement === "bass") {
+          min = 40; max = 59; // E2..B3
+          this.renderForceClef = "bass";
+        } else {
+          min = 45; max = 84;
+          this.renderForceClef = null;
+        }
+
+        // Choose displayStyle
+        if (!this.isTwo) {
+          this.displayStyle = "single";
+        } else if (this.style === "either") {
+          this.displayStyle = (Math.random() < 0.5) ? "harmonic" : "melodic";
+        } else {
+          this.displayStyle = this.style; // harmonic or melodic
+        }
+
+        // Choose duration
+        if (!this.isTwo) {
+          this.targetDuration = randomDuration(); // q/h/w
+        } else {
+          // harmonic supports q/h/w nicely; melodic we force quarter for clean spacing
+          this.targetDuration = (this.displayStyle === "melodic") ? "q" : randomDuration();
+        }
+
+        // Build targets
+        if (!this.isTwo) {
+          const m1 = randomNaturalMidiInRange(min, max);
+          this.targetNotes = [midiToNoteName(m1)];
+        } else {
+          const m1 = randomNaturalMidiInRange(min, max);
+          const m2 = pickSecondWithinFifth(m1, min, max);
+          this.targetNotes = [midiToNoteName(m1), midiToNoteName(m2)];
+        }
+
+        // Reset UI
+        answerCard.style.display = "none";
+        elTargetAnswer.textContent = "—";
+        elPlayed.textContent = "—";
+        setResult("", "");
+
+        // Render
+        if (!this.isTwo) {
+          drawGrandStaffHarmonic(this.targetNotes, this.targetDuration, this.renderForceClef);
+        } else if (this.displayStyle === "melodic") {
+          drawGrandStaffMelodic(this.targetNotes, this.renderForceClef);
+        } else {
+          drawGrandStaffHarmonic(this.targetNotes, this.targetDuration, this.renderForceClef);
+        }
+
+        elDebug.textContent =
+          `Challenge=${selChallenge.value} | display=${this.displayStyle} | duration=${this.targetDuration} | maxInterval=5th`;
+      },
+
+      revealAnswer() {
+        elTargetAnswer.textContent = `${this.targetNotes.join(", ")} (${this.targetDuration})`;
+        answerCard.style.display = "block";
+      },
+
+      hideAnswer() {
+        answerCard.style.display = "none";
+      },
+
+      handlePlayedNote(noteName) {
+        if (!this.targetNotes.length) return;
+        if (this.isLocked) return;
+
+        // SINGLE
+        if (!this.isTwo) {
+          elPlayed.textContent = noteName;
+          const correct = (noteName === this.targetNotes[0]);
+          if (correct) {
+            this.isLocked = true;
+            setResult("✅ Correct", "ok");
+            setTimeout(() => this.newChallenge(), 450);
+          } else {
+            setResult("❌ Wrong", "bad");
+          }
+          return;
+        }
+
+        // TWO-NOTE
+        this._setAttemptTimeout();
+
+        if (!this.attemptNotes.includes(noteName)) {
+          this.attemptNotes.push(noteName);
+          this.attemptTimes.push(Date.now());
+        }
+
+        elPlayed.textContent = this.attemptNotes.join(", ");
+
+        if (this.attemptNotes.length >= 2) {
+          if (this.attemptTimer) clearTimeout(this.attemptTimer);
+          this.attemptTimer = null;
+
+          const match = this._notesMatchTargetSet();
+          const attemptStyle = this._attemptStyleByTimeGap(); // harmonic|melodic
+
+          const styleOk = (this.style === "either") || (attemptStyle === this.style);
+
+          if (match && styleOk) {
+            this.isLocked = true;
+            setResult("✅ Correct", "ok");
+            setTimeout(() => this.newChallenge(), 450);
+          } else {
+            if (match && !styleOk) setResult(`❌ Wrong style (need ${this.style})`, "bad");
+            else setResult("❌ Wrong", "bad");
+
+            this._resetAttempt();
+            elPlayed.textContent = "—";
+          }
+        }
+      }
+    };
+
+    // ----------------------------
+    // UI wiring
+    // ----------------------------
+    selChallenge.addEventListener("change", () => { Engine.newChallenge(); blurSelect(selChallenge); });
+    btnNew.addEventListener("click", () => Engine.newChallenge());
+    btnShowAnswer.addEventListener("click", () => Engine.revealAnswer());
+    btnHideAnswer.addEventListener("click", () => Engine.hideAnswer());
+
+    // ----------------------------
+    // MIDI wiring
+    // ----------------------------
+    let midiAccess = null;
+    let activeInput = null;
+
+    function populateInputs() {
+      const inputs = Array.from(midiAccess.inputs.values());
+      selInputs.innerHTML = "";
+
+      if (inputs.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no MIDI inputs found)";
+        selInputs.appendChild(opt);
+        selInputs.disabled = true;
+        return;
+      }
+
+      for (const input of inputs) {
+        const opt = document.createElement("option");
+        opt.value = input.id;
+        opt.textContent = input.name || `Input ${input.id}`;
+        selInputs.appendChild(opt);
+      }
+      selInputs.disabled = false;
+    }
+
+    function detachActive() {
+      if (activeInput) activeInput.onmidimessage = null;
+      activeInput = null;
+    }
+
+    function attachToInput(inputId) {
+      detachActive();
+      const input = midiAccess.inputs.get(inputId);
+      if (!input) return;
+      activeInput = input;
+      activeInput.onmidimessage = onMidiMessage;
+      elDebug.textContent = `Listening to: ${activeInput.name || activeInput.id}`;
+    }
+
+    function pickDefaultInput() {
+      const inputs = Array.from(midiAccess.inputs.values());
+      if (inputs.length === 0) return;
+      const preferred = inputs.find(i => /fp|roland/i.test(i.name || ""));
+      const chosen = preferred || inputs[0];
+      selInputs.value = chosen.id;
+      attachToInput(chosen.id);
+    }
+
+    function onMidiMessage(msg) {
+      const [status, data1, data2] = msg.data;
+      const cmd = status & 0xF0;
+      const isNoteOn = (cmd === 0x90 && data2 > 0);
+      if (!isNoteOn) return;
+
+      const played = midiToNoteName(data1);
+      Engine.handlePlayedNote(played);
+    }
+
+    btnEnable.addEventListener("click", async () => {
+      if (!navigator.requestMIDIAccess) {
+        alert("WebMIDI not supported. Use Chrome.");
+        return;
+      }
+      try {
+        midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+
+        populateInputs();
+        pickDefaultInput();
+
+        midiAccess.onstatechange = () => {
+          populateInputs();
+          if (activeInput && !midiAccess.inputs.get(activeInput.id)) {
+            detachActive();
+            pickDefaultInput();
+          }
+        };
+
+        btnEnable.disabled = true;
+        btnEnable.textContent = "MIDI Enabled";
+      } catch (e) {
+        console.error(e);
+        alert("Could not enable MIDI. Check permissions and USB connection.");
+      }
+    });
+
+    selInputs.addEventListener("change", () => {
+      if (!midiAccess) return;
+      const id = selInputs.value;
+      if (id) attachToInput(id);
+    });
+
+    // ----------------------------
+    // Dev keyboard input (coffee shop)
+    // ----------------------------
+    const KEYMAP = {
+      "a": "C4",
+      "s": "D4",
+      "d": "E4",
+      "f": "F4",
+      "g": "G4",
+      "h": "A4",
+      "j": "B4",
+      "k": "C5",
+    };
+
+    window.addEventListener("keydown", (e) => {
+      const tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+
+      const key = e.key.toLowerCase();
+      const mapped = KEYMAP[key];
+      if (mapped) {
+        e.preventDefault();
+        Engine.handlePlayedNote(mapped);
+      }
+    });
+
+    // Start
+    Engine.newChallenge();
+  </script>
 </body>
 </html>
